@@ -1,0 +1,7 @@
+[
+ {"title":"ADP Non-Farm Employment Change","country":"USD","date":"2026-11-04T08:15:00-05:00","impact":"High","forecast":"105K","previous":"89K"},
+ {"title":"ISM Services PMI","country":"USD","date":"2026-11-04T10:00:00-05:00","impact":"High","forecast":"51.8","previous":"50.0"},
+ {"title":"Crude Oil Inventories","country":"USD","date":"2026-11-04T10:30:00-05:00","impact":"Medium","forecast":"-0.6M","previous":"-0.1M"},
+ {"title":"German Factory Orders m/m","country":"EUR","date":"2026-11-04T02:00:00-05:00","impact":"High","forecast":"0.5%","previous":"-0.8%"},
+ {"title":"Bank Holiday","country":"USD","date":"2026-11-04T00:00:00-05:00","impact":"Holiday","forecast":"","previous":""}
+]
