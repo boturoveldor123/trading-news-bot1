@@ -1,20 +1,23 @@
 # Trading news bot
 
-- **FXStreet**: oltin, neft, dollar yangiliklari. Har 5 daqiqada tekshiriladi, yangisi chiqsa darhol yuboriladi.
+- **FXStreet**: oltin, neft va dollar indeksi (DXY) yangiliklari. Har 5 daqiqada tekshiriladi, yangisi chiqsa darhol yuboriladi.
   Rasm: maqolaning o'z rasmi (olinsa), aks holda kartochka. Matn: tarjima + AI xulosa + manba.
-- **Forex Factory**: AQSH (USD) high impact voqealari. Har kuni 00:00 (O'zbekiston vaqti) da bitta post.
-- Investing.com hozircha yo'q.
+- **00:00 kalendar posti** (O'zbekiston vaqti, bitta post): AQSH (USD) uchun Forex Factory high impact + Investing.com o'rta va yuqori ta'sirli voqealar. 🔴 yuqori, 🟠 o'rta. Rasm: AI yaratadi (GEMINI_API_KEY bilan), bo'lmasa kartochka.
+  Investing.com ulanmasa, o'rta ta'sirli voqealar vaqtincha Forex Factory dan olinadi va postda shu yoziladi.
 
 ## 1. Sinab ko'rish (Telegramga yubormaydi)
     pip install -r requirements.txt
     python news_bot.py fxstreet --dry-run --rss-file fixtures/sample_fxstreet.xml
     python news_bot.py forexfactory --dry-run                # haqiqiy oqimdan bugungi voqealar
-Natija `out/` papkada. `Forex Factory: N ta USD high impact voqea` qatorini tekshiring.
+    python news_bot.py forexfactory --dry-run --ff-file fixtures/sample_ff_SYNTHETIC.json --inv-file fixtures/sample_investing_SYNTHETIC.html --date 2026-11-04
+Natija `out/` papkada. `Kalendar: N ta USD voqea` va `Investing vaqti: ...` qatorlarini tekshiring: vaqt Forex Factory bilan solishtirilib avtomatik to'g'rilanadi.
 
 ## 2. Sozlamalar (yashirin)
 - `TELEGRAM_BOT_TOKEN`: bot tokeni
 - `TELEGRAM_CHANNEL`: kanal ID si (`-100...`)
-- `ANTHROPIC_API_KEY`: tarjima va xulosa uchun (ixtiyoriy; bo'lmasa original inglizcha matn ketadi)
+- `GEMINI_API_KEY`: BEPUL tarjima va xulosa uchun (aistudio.google.com, API key). Ixtiyoriy.
+- `ANTHROPIC_API_KEY`: pullik muqobil (Claude). Ikkalasi bo'lsa Claude ishlatiladi.
+- Hech biri bo'lmasa original inglizcha matn ketadi.
 
 ## 3A. GitHub Actions orqali (kompyutersiz)
 1. Repository oching, hamma fayllarni yuklang (`.github` papkasi ham).
