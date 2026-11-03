@@ -1,7 +1,7 @@
 """Trading yangiliklari boti.
 
   FXStreet     : oltin, neft, dollar yangiliklari. Har 5 daqiqada tekshiriladi, yangi chiqsa darhol kanalga yuboriladi.
-  Forex Factory: AQSH (USD) uchun yuqori ta'sirli (high impact) voqealar. Har kuni 00:00 da (O'zbekiston vaqti) bitta post.
+  Forex Factory: AQSH (USD) uchun yuqori ta'sirli (high impact) voqealar. Har kuni 00:00 da (Toshkent vaqti) bitta post.
 
 Rasm: avval FXStreet maqolasining o'z rasmi (og:image) olinadi, bo'lmasa brendli kartochka chiziladi.
 Matn: tarjima + AI xulosa + manba (ANTHROPIC_API_KEY bo'lmasa, original inglizcha matn yuboriladi).
@@ -16,8 +16,9 @@ Sinash (yubormaydi, out/ papkaga yozadi):
 
 Muhit o'zgaruvchilari:
     TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL   (yuborish uchun shart)
-    ANTHROPIC_API_KEY                      (ixtiyoriy: tarjima va xulosa uchun)
-    ANTHROPIC_MODEL                        (ixtiyoriy, standart: claude-haiku-5-5)
+    GEMINI_API_KEY                         (ixtiyoriy, BEPUL reja bor: tarjima va xulosa uchun, aistudio.google.com)
+    ANTHROPIC_API_KEY                      (ixtiyoriy, pullik: ikkalasi bo'lsa Claude ishlatiladi)
+    GEMINI_MODEL / ANTHROPIC_MODEL         (ixtiyoriy; standart: gemini-2.5-flash-lite / claude-haiku-5-5)
 """
 import argparse
 import io
@@ -34,10 +35,12 @@ from pathlib import Path
 import requests
 
 # ---------------- SOZLAMALAR ----------------
-UZ = timezone(timedelta(hours=5))             # O'zbekiston vaqti
+UZ = timezone(timedelta(hours=5))             # Toshkent vaqti
 HERE = Path(__file__).parent
 STATE_FILE = HERE / "state.json"
 MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-haiku-5-5")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "")
+GEMINI_MODELS = ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-flash-lite-latest", "gemini-flash-latest"]
 
 RSS_URLS = ["https://xml.fxstreet.com/news/forex-news/index.xml",
             "https://www.fxstreet.com/rss/news"]
@@ -102,27 +105,70 @@ def save_state(st):
 
 
 # ---------------- AI (tarjima va xulosa) ----------------
+def _parse_json(text):
+    a, b = text.find("{"), text.rfind("}")
+    return json.loads(text[a:b + 1])
+
+
+def _ai_claude(prompt, max_tokens, key):
+    r = requests.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+        json={"model": MODEL, "max_tokens": max_tokens,
+              "messages": [{"role": "user", "content": prompt}]},
+        timeout=60)
+    if not r.ok:
+        log(f"  AI (Claude) xatosi: HTTP {r.status_code}")
+        return None
+    return _parse_json("".join(b.get("text", "") for b in r.json().get("content", [])))
+
+
+def _ai_gemini(prompt, max_tokens, key):
+    models = [GEMINI_MODEL] if os.environ.get("GEMINI_MODEL") else GEMINI_MODELS
+    for model in models:
+        r = requests.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+            headers={"x-goog-api-key": key, "content-type": "application/json"},
+            json={"contents": [{"parts": [{"text": prompt}]}],
+                  "generationConfig": {"responseMimeType": "application/json",
+                                       "maxOutputTokens": max(max_tokens, 2048), "temperature": 0.2}},
+            timeout=60)
+        if r.status_code == 404:                       # model topilmadi: keyingisini sinaymiz
+            log(f"  AI (Gemini): {model} topilmadi, keyingi model sinab ko'riladi")
+            continue
+        if not r.ok:
+            try:
+                msg = r.json().get("error", {}).get("message", "")
+            except Exception:
+                msg = ""
+            log(f"  AI (Gemini) xatosi: HTTP {r.status_code} {msg.replace(key, '***')[:200]}")
+            return None
+        data = r.json()
+        cands = data.get("candidates") or []
+        if not cands or not cands[0].get("content"):
+            log(f"  AI (Gemini): javob bo'sh ({data.get('promptFeedback') or cands})")
+            return None
+        parts = cands[0]["content"].get("parts", [])
+        return _parse_json("".join(p.get("text", "") for p in parts))
+    log("  AI (Gemini): hech bir model ishlamadi")
+    return None
+
+
 def ai_json(prompt, max_tokens=1200):
-    key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if NO_AI or not key:
+    """Kalit bo'yicha tanlaydi: ANTHROPIC_API_KEY (pullik) yoki GEMINI_API_KEY (bepul reja bor)."""
+    if NO_AI:
+        return None
+    if not os.environ.get("ANTHROPIC_API_KEY") and not os.environ.get("GEMINI_API_KEY"):
+        log("  AI: kalit topilmadi (GEMINI_API_KEY secret kiritilmagan yoki nomi noto'g'ri)")
         return None
     try:
-        r = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={"x-api-key": key, "anthropic-version": "2023-06-01",
-                     "content-type": "application/json"},
-            json={"model": MODEL, "max_tokens": max_tokens,
-                  "messages": [{"role": "user", "content": prompt}]},
-            timeout=60)
-        if not r.ok:
-            log(f"  AI xatosi: HTTP {r.status_code}")
-            return None
-        text = "".join(b.get("text", "") for b in r.json().get("content", []))
-        a, b = text.find("{"), text.rfind("}")
-        return json.loads(text[a:b + 1])
+        if os.environ.get("ANTHROPIC_API_KEY"):
+            return _ai_claude(prompt, max_tokens, os.environ["ANTHROPIC_API_KEY"])
+        if os.environ.get("GEMINI_API_KEY"):
+            return _ai_gemini(prompt, max_tokens, os.environ["GEMINI_API_KEY"])
     except Exception as e:
         log(f"  AI xatosi: {type(e).__name__}")
-        return None
+    return None
 
 
 def ai_news(title, summary):
@@ -145,8 +191,9 @@ def ai_events(rows, day_label):
     p = f"""Sen iqtisodiy kalendar tarjimonisan. Quyida {day_label} kuni AQSH (USD) uchun yuqori ta'sirli voqealar ro'yxati.
 Qoidalar:
 - "names": har bir voqea nomini o'zbek tiliga (lotin yozuvi) tarjima qil, mashhur qisqartmani qavsda qoldir (masalan "NFP", "CPI"). Tartib va soni ro'yxatdagidek bo'lsin.
+- "notes": har bir voqea uchun qisqa izoh (12 so'zgacha): bu ko'rsatkich nimani o'lchaydi yoki voqea nima. Faqat umumiy ma'no, raqam yoki natijani taxmin qilma. Bilmasang bo'sh qator ("") qoldir. Soni ro'yxatdagidek bo'lsin.
 - "summary": 1-2 gap: bugun nimalar kutilayotganini umumiy ayt. Faqat ro'yxatdan foydalan, bozor qaysi tomonga ketishini bashorat qilma, maslahat berma.
-Faqat JSON qaytar: {{"names": ["...", "..."], "summary": "..."}}
+Faqat JSON qaytar: {{"names": ["..."], "notes": ["..."], "summary": "..."}}
 
 {lst}"""
     return ai_json(p)
@@ -263,7 +310,7 @@ def news_card(topic, title_uz, orig_title, orig_summary, pub_uz):
         d.text((16 * S, (118 + 20 * i) * S), ln, font=f_t, fill="#f1efe8", anchor="ls")
     d.line([(16 * S, 160 * S), (324 * S, 160 * S)], fill="#3c3489", width=S)
     f_s = _font(11 * S)
-    d.text((16 * S, 182 * S), f"{pub_uz:%H:%M} · {pub_uz.day} {MONTH[pub_uz.month]} · O'zbekiston vaqti",
+    d.text((16 * S, 182 * S), f"{pub_uz:%H:%M} · {pub_uz.day} {MONTH[pub_uz.month]} · Toshkent vaqti",
            font=f_s, fill="#b4b2a9", anchor="ls")
     d.text((324 * S, 182 * S), "FXStreet", font=f_s, fill="#b4b2a9", anchor="rs")
     return _png(img)
@@ -293,7 +340,7 @@ def ff_card(day, rows, names):
         d.text((68 * S, y), line, font=f_r, fill="#f1efe8", anchor="ls")
     if len(rows) > 5:
         d.text((68 * S, (128 + 22 * 5) * S), f"+ yana {len(rows) - 5} ta", font=f_r, fill="#b4b2a9", anchor="ls")
-    d.text((16 * S, 228 * S), "O'zbekiston vaqti · Forex Factory", font=_font(11 * S), fill="#b4b2a9", anchor="ls")
+    d.text((16 * S, 228 * S), "Toshkent vaqti · Forex Factory", font=_font(11 * S), fill="#b4b2a9", anchor="ls")
     return _png(img)
 
 
@@ -384,7 +431,8 @@ def build_news_post(item, topic):
     pub_uz = item["pub"].astimezone(UZ)
     _c, name, emoji, *_ = next(t for t in TOPICS if t[0] == topic)
     ai = ai_news(item["title"], item["summary"])
-    head = f"{emoji} {name} · FXStreet\n🕔 {pub_uz:%H:%M} (O'zbekiston vaqti)\n"
+    head = (f"{emoji} {name} · FXStreet\n"
+            f"🕔 Saytga qo'yilgan vaqt: {pub_uz:%H:%M}, {pub_uz.day}-{MONTH[pub_uz.month]} (Toshkent vaqti)\n")
     if ai and ai.get("text"):
         title_uz = ai.get("title") or item["title"]
         body = f"\nTarjima\n{ai['text'].strip()}\n"
@@ -392,7 +440,7 @@ def build_news_post(item, topic):
             body += f"\nAI xulosa\n{ai['summary'].strip()}\n"
     else:
         title_uz = item["title"]
-        body = f"\n{item['title']}\n{item['summary']}\n\n(AI tarjima o'chiq: matn original inglizcha)\n"
+        body = f"\n{item['title']}\n{item['summary']}\n"
     caption = f"{head}{body}\nManba: FXStreet\n{item['link']}"
     image = article_image(item["link"]) or news_card(topic, title_uz, item["title"], item["summary"], pub_uz)
     return image, caption
@@ -503,15 +551,18 @@ def run_forexfactory(args):
     names = (ai or {}).get("names")
     if not isinstance(names, list) or len(names) != len(rows):
         names = [r["title"] for r in rows]
+    notes = (ai or {}).get("notes")
+    if not isinstance(notes, list) or len(notes) != len(rows):
+        notes = [""] * len(rows)
     L = [f"📅 {WEEKDAY[day.weekday()]}, {day.day} {MONTH[day.month]}: AQSH uchun yuqori ta'sirli voqealar",
-         "🕔 Vaqt: O'zbekiston vaqti", ""]
-    for r, nm in zip(rows, names):
+         "🕔 Vaqtlar Toshkent vaqti bilan", ""]
+    for r, nm, nt in zip(rows, names, notes):
         L.append(f"{r['uz']:%H:%M}  {nm}")
         L.append(f"        Prognoz: {r['forecast'] or '-'} · Oldingi: {r['previous'] or '-'}")
+        if nt:
+            L.append(f"        ℹ️ {nt}")
     if ai and ai.get("summary"):
         L += ["", "AI xulosa", ai["summary"].strip()]
-    else:
-        L += ["", "(AI tarjima o'chiq: nomlar original inglizcha)"]
     L += ["", f"Manba: Forex Factory\n{FF_LINK}"]
     caption = "\n".join(L)
     image = ff_card(day, rows, names)
